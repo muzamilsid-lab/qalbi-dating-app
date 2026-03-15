@@ -1,0 +1,11 @@
+export * from './types';
+export { keyManager }        from './crypto/KeyManager';
+export { messageCipher }     from './crypto/MessageCipher';
+export { chatDB }            from './db/ChatIndexedDB';
+export { messageQueue }      from './queue/MessageQueue';
+export { useConversation }   from './hooks/useConversation';
+export { usePresence }       from './hooks/usePresence';
+export { useTypingIndicator} from './hooks/useTypingIndicator';
+export { useReadReceipts }   from './hooks/useReadReceipts';
+export { screenshotDetector, ANTI_SCREENSHOT_STYLE } from './privacy/ScreenshotDetector';
+export { extractUrls, fetchLinkPreview, isObviouslyUnsafe } from './privacy/LinkSafetyChecker';

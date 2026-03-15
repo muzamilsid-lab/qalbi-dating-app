@@ -1,0 +1,12 @@
+export * from './types';
+export { RecommendationEngine }  from './RecommendationEngine';
+export { FairnessGuard }         from './FairnessGuard';
+export { RedisCache }            from './RedisCache';
+export { DailyScoreComputer }    from './jobs/DailyScoreComputer';
+export { RealtimeUpdater }       from './jobs/RealtimeUpdater';
+export { aggregateScore }        from './scoring/ScoreAggregator';
+export { scoreCompatibility }    from './scoring/CompatibilityScorer';
+export { scoreActivity }         from './scoring/ActivityScorer';
+export { scoreEngagement }       from './scoring/EngagementScorer';
+export { scoreFreshness }        from './scoring/FreshnessScorer';
+export { scoreLocation }         from './scoring/LocationScorer';
