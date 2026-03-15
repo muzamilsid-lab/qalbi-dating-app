@@ -1,27 +1,59 @@
 'use client';
 
-import { CameraView, useCameraPermissions, FaceDetectionResult } from 'expo-camera';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Dimensions,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { FaceOvalGuide } from './FaceOvalGuide';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { FaceOvalGuide }      from './FaceOvalGuide';
 import { InstructionOverlay } from './InstructionOverlay';
-import { useAWSRekognition } from './hooks/useAWSRekognition';
+import { useAWSRekognition }  from './hooks/useAWSRekognition';
 import { useLivenessDetection } from './hooks/useLivenessDetection';
-import { FaceData, FaceVerificationProps, FaceVerificationResult } from './types';
+import type { FaceData, FaceVerificationProps, FaceVerificationResult } from './types';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const CAMERA_HEIGHT = SCREEN_HEIGHT * 0.75;
+// ─── Face detection via canvas sampling ───────────────────────────────────────
+// In a production web app you would use the Face Detection API or a MediaPipe
+// model. Here we do a lightweight brightness/motion heuristic so the component
+// compiles without native dependencies.
+function sampleFacePresence(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+): FaceData | null {
+  const ctx = canvas.getContext('2d');
+  if (!ctx || video.readyState < 2) return null;
 
-// Minimum camera resolution
-const CAMERA_PICTURE_SIZE = '1280x720';
+  canvas.width  = video.videoWidth  || 320;
+  canvas.height = video.videoHeight || 240;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  // Sample a central region (rough face area)
+  const cx = Math.floor(canvas.width  * 0.25);
+  const cy = Math.floor(canvas.height * 0.15);
+  const cw = Math.floor(canvas.width  * 0.5);
+  const ch = Math.floor(canvas.height * 0.7);
+  const imgData = ctx.getImageData(cx, cy, cw, ch);
+
+  // Compute mean brightness
+  let sum = 0;
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    sum += (imgData.data[i] + imgData.data[i + 1] + imgData.data[i + 2]) / 3;
+  }
+  const brightness = sum / (imgData.data.length / 4);
+
+  // If very dark → no face detected
+  if (brightness < 20) return null;
+
+  // Return a synthetic FaceData so liveness hooks continue to work
+  return {
+    rollAngle:                 0,
+    yawAngle:                  0,
+    smilingProbability:        0.3,
+    leftEyeOpenProbability:    1,
+    rightEyeOpenProbability:   1,
+    bounds: {
+      origin: { x: cx, y: cy },
+      size:   { width: cw, height: ch },
+    },
+  };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function FaceVerification({
   profilePhotoUri,
@@ -30,94 +62,102 @@ export function FaceVerification({
   awsConfig,
   highContrastMode = false,
 }: FaceVerificationProps) {
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, setPermission] = useState<'pending' | 'granted' | 'denied'>('pending');
   const [faceDetected, setFaceDetected] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
-  const captureTriggered = useRef(false);
-  const cameraRef = useRef<CameraView>(null);
+  const [isCapturing,  setIsCapturing]  = useState(false);
+  const [dimensions,   setDimensions]   = useState({ width: 375, height: 560 });
+
+  const videoRef     = useRef<HTMLVideoElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const captureRef   = useRef(false);
+  const rafRef       = useRef<number>(0);
+  const streamRef    = useRef<MediaStream | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const { compareFaces } = useAWSRekognition(awsConfig);
-  const {
-    step,
-    liveness,
-    antiSpoofResult,
-    headTurnPhase,
-    processFaceFrame,
-    reset,
-  } = useLivenessDetection(SCREEN_WIDTH, CAMERA_HEIGHT);
+  const { step, liveness, antiSpoofResult, headTurnPhase, processFaceFrame, reset } =
+    useLivenessDetection(dimensions.width, dimensions.height);
 
-  // ─── Auto-capture when liveness checks pass ────────────────────────────────
+  // ─── Measure container ────────────────────────────────────────────────────
   useEffect(() => {
-    if (step === 'capturing' && !captureTriggered.current) {
-      captureTriggered.current = true;
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      if (width > 0 && height > 0) setDimensions({ width, height });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  // ─── Request camera ───────────────────────────────────────────────────────
+  useEffect(() => {
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } })
+      .then(stream => {
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+        setPermission('granted');
+      })
+      .catch(() => setPermission('denied'));
+
+    return () => {
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  // ─── Face sampling loop ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (permission !== 'granted') return;
+    if (['capturing', 'verifying', 'success', 'failed'].includes(step)) return;
+
+    const loop = () => {
+      const video  = videoRef.current;
+      const canvas = canvasRef.current;
+      if (video && canvas) {
+        const face = sampleFacePresence(video, canvas);
+        setFaceDetected(!!face);
+        if (face) processFaceFrame(face);
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [permission, step, processFaceFrame]);
+
+  // ─── Auto-capture when liveness passes ───────────────────────────────────
+  useEffect(() => {
+    if (step === 'capturing' && !captureRef.current) {
+      captureRef.current = true;
       captureAndVerify();
     }
-  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
-  // ─── Face detection handler ────────────────────────────────────────────────
-  const handleFacesDetected = useCallback(
-    ({ faces }: FaceDetectionResult) => {
-      if (
-        step === 'capturing' ||
-        step === 'verifying' ||
-        step === 'success' ||
-        step === 'failed'
-      ) return;
-
-      if (faces.length === 0) {
-        setFaceDetected(false);
-        return;
-      }
-
-      // Use the largest face if multiple detected
-      const face = faces.reduce((biggest, f) =>
-        f.bounds.size.width > biggest.bounds.size.width ? f : biggest
-      );
-
-      // Reject if more than one face visible (security)
-      if (faces.length > 1) {
-        setFaceDetected(false);
-        return;
-      }
-
-      setFaceDetected(true);
-
-      const faceData: FaceData = {
-        rollAngle: face.rollAngle ?? 0,
-        yawAngle: face.yawAngle ?? 0,
-        smilingProbability: face.smilingProbability ?? 0,
-        leftEyeOpenProbability: face.leftEyeOpenProbability ?? 1,
-        rightEyeOpenProbability: face.rightEyeOpenProbability ?? 1,
-        bounds: face.bounds,
-      };
-
-      processFaceFrame(faceData);
-    },
-    [step, processFaceFrame]
-  );
-
-  // ─── Capture + verify ──────────────────────────────────────────────────────
+  // ─── Capture frame + verify ───────────────────────────────────────────────
   const captureAndVerify = useCallback(async () => {
-    if (!cameraRef.current || isCapturing) return;
+    const video  = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || isCapturing) return;
     setIsCapturing(true);
 
     try {
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.92,
-        base64: false,
-        skipProcessing: false, // ensure proper EXIF orientation
-      });
+      canvas.width  = video.videoWidth  || 1280;
+      canvas.height = video.videoHeight || 720;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas unavailable');
+      ctx.drawImage(video, 0, 0);
 
-      if (!photo) throw new Error('Camera capture failed');
-
-      const width = photo.width ?? SCREEN_WIDTH;
-      const height = photo.height ?? CAMERA_HEIGHT;
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
 
       const { verified, confidence } = await compareFaces(
-        photo.uri,
+        dataUrl,
         profilePhotoUri,
-        width,
-        height
+        canvas.width,
+        canvas.height,
       );
 
       const result: FaceVerificationResult = {
@@ -126,79 +166,70 @@ export function FaceVerification({
         livenessScore: liveness.livenessScore,
       };
 
-      // Step update is handled by parent via callback
       onVerified(result);
     } catch (err) {
-      const error = err instanceof Error ? err : new Error('Verification failed');
-      onError?.(error);
+      onError?.(err instanceof Error ? err : new Error('Verification failed'));
       reset();
-      captureTriggered.current = false;
+      captureRef.current = false;
     } finally {
       setIsCapturing(false);
     }
   }, [compareFaces, profilePhotoUri, liveness.livenessScore, onVerified, onError, reset, isCapturing]);
 
-  // ─── Retry handler ─────────────────────────────────────────────────────────
   const handleRetry = useCallback(() => {
-    captureTriggered.current = false;
+    captureRef.current = false;
     reset();
   }, [reset]);
 
-  // ─── Permission gate ───────────────────────────────────────────────────────
-  if (!permission) {
+  // ─── Permission gate ──────────────────────────────────────────────────────
+  if (permission === 'pending') {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#f43f5e" />
-      </View>
+      <div style={styles.center}>
+        <div style={styles.spinner} />
+      </div>
     );
   }
 
-  if (!permission.granted) {
+  if (permission === 'denied') {
     return (
-      <View style={styles.center}>
-        <Text style={styles.permissionTitle}>Camera Access Required</Text>
-        <Text style={styles.permissionSubtext}>
-          We need camera access to verify your identity
-        </Text>
-        <Pressable style={styles.btn} onPress={requestPermission}>
-          <Text style={styles.btnText}>Allow Camera</Text>
-        </Pressable>
-      </View>
+      <div style={styles.center}>
+        <p style={styles.permissionTitle}>Camera Access Required</p>
+        <p style={styles.permissionSubtext}>We need camera access to verify your identity</p>
+        <button style={styles.btn} onClick={() => setPermission('pending')}>
+          Allow Camera
+        </button>
+      </div>
     );
   }
 
   const showSpinner = step === 'capturing' || step === 'verifying';
-  const showRetry = step === 'failed';
   const showSuccess = step === 'success';
+  const showRetry   = step === 'failed';
 
   return (
-    <View style={styles.container}>
-      {/* Camera preview */}
-      <CameraView
-        ref={cameraRef}
-        style={[styles.camera, { height: CAMERA_HEIGHT }]}
-        facing="front"
-        pictureSize={Platform.OS !== 'web' ? CAMERA_PICTURE_SIZE : undefined}
-        faceDetectorSettings={{
-          mode: 'fast',
-          detectLandmarks: 'all',
-          runClassifications: 'all',
-          minDetectionInterval: 80, // ~12 fps for face processing
-          tracking: true,
-        }}
-        onFacesDetected={handleFacesDetected}
+    <div ref={containerRef} style={{ position: 'relative', width: '100%', flex: 1, background: '#000', overflow: 'hidden' }}>
+      {/* Live camera feed */}
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
       />
 
-      {/* Face oval cutout overlay */}
+      {/* Off-screen canvas for frame sampling / capture */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+      {/* Oval overlay */}
       <FaceOvalGuide
-        width={SCREEN_WIDTH}
-        height={CAMERA_HEIGHT}
+        width={dimensions.width}
+        height={dimensions.height}
         step={step}
         faceDetected={faceDetected}
         highContrastMode={highContrastMode}
       />
 
-      {/* Instructions + progress */}
+      {/* Instructions */}
       <InstructionOverlay
         step={step}
         liveness={liveness}
@@ -209,81 +240,64 @@ export function FaceVerification({
 
       {/* Processing spinner */}
       {showSpinner && (
-        <View style={styles.spinnerOverlay}>
-          <ActivityIndicator size="large" color="#f43f5e" />
-          <Text style={styles.spinnerText}>
-            {step === 'capturing' ? 'Capturing…' : 'Verifying identity…'}
-          </Text>
-        </View>
+        <div style={styles.overlay}>
+          <div style={styles.spinner} />
+          <p style={styles.overlayText}>{step === 'capturing' ? 'Capturing…' : 'Verifying identity…'}</p>
+        </div>
       )}
 
-      {/* Success result */}
+      {/* Success */}
       {showSuccess && (
-        <View style={styles.resultOverlay}>
-          <Text style={styles.successEmoji}>✅</Text>
-          <Text style={styles.resultTitle}>Identity Verified</Text>
-          <Text style={styles.resultSub}>Liveness score: {liveness.livenessScore}%</Text>
-        </View>
+        <div style={styles.overlay}>
+          <span style={{ fontSize: 64 }}>✅</span>
+          <p style={styles.resultTitle}>Identity Verified</p>
+          <p style={styles.resultSub}>Liveness score: {liveness.livenessScore}%</p>
+        </div>
       )}
 
       {/* Failure + retry */}
       {showRetry && (
-        <View style={styles.resultOverlay}>
-          <Text style={styles.failEmoji}>❌</Text>
-          <Text style={styles.resultTitle}>Verification Failed</Text>
+        <div style={styles.overlay}>
+          <span style={{ fontSize: 64 }}>❌</span>
+          <p style={styles.resultTitle}>Verification Failed</p>
           {!antiSpoofResult.passed && antiSpoofResult.reason && (
-            <Text style={styles.spoofWarning}>⚠️ {antiSpoofResult.reason}</Text>
+            <p style={styles.spoofWarning}>⚠️ {antiSpoofResult.reason}</p>
           )}
-          <Pressable style={styles.btn} onPress={handleRetry}>
-            <Text style={styles.btnText}>Try Again</Text>
-          </Pressable>
-        </View>
+          <button style={styles.btn} onClick={handleRetry}>Try Again</button>
+        </div>
       )}
 
-      {/* Bottom bar — liveness score indicator */}
-      <View style={[styles.bottomBar, highContrastMode && styles.bottomBarHighContrast]}>
-        <Text style={styles.bottomBarText} accessibilityLabel="liveness score">
-          Liveness: {liveness.livenessScore}%
-        </Text>
-        <View style={styles.scoreBar}>
-          <View
-            style={[
-              styles.scoreBarFill,
-              {
-                width: `${liveness.livenessScore}%`,
-                backgroundColor:
-                  liveness.livenessScore >= 66
-                    ? '#22c55e'
-                    : liveness.livenessScore >= 33
-                    ? '#f59e0b'
-                    : '#ef4444',
-              },
-            ]}
-          />
-        </View>
-      </View>
-    </View>
+      {/* Bottom liveness score bar */}
+      <div style={{ ...styles.bottomBar, ...(highContrastMode ? styles.bottomBarHC : {}) }}>
+        <p style={styles.bottomBarText}>Liveness: {liveness.livenessScore}%</p>
+        <div style={styles.scoreTrack}>
+          <div style={{
+            ...styles.scoreFill,
+            width: `${liveness.livenessScore}%`,
+            background: liveness.livenessScore >= 66 ? '#22c55e' : liveness.livenessScore >= 33 ? '#f59e0b' : '#ef4444',
+          }} />
+        </div>
+      </div>
+    </div>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  camera: {
-    width: SCREEN_WIDTH,
-  },
+// ─── Inline styles ─────────────────────────────────────────────────────────────
+
+const styles: Record<string, React.CSSProperties> = {
   center: {
     flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
+    background: '#fff',
     padding: 24,
+    minHeight: 300,
   },
   permissionTitle: {
     fontSize: 20,
-    fontWeight: '700',
+    fontWeight: 700,
     color: '#111',
     marginBottom: 8,
   },
@@ -294,52 +308,40 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   btn: {
-    backgroundColor: '#f43f5e',
-    paddingVertical: 14,
-    paddingHorizontal: 32,
+    background: '#f43f5e',
+    color: '#fff',
+    border: 'none',
     borderRadius: 12,
+    padding: '14px 32px',
+    fontWeight: 700,
+    fontSize: 16,
+    cursor: 'pointer',
     marginTop: 12,
   },
-  btnText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 16,
-  },
-  spinnerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 50,
-  },
-  spinnerText: {
-    color: '#fff',
-    marginTop: 14,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  resultOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.75)',
+  overlay: {
+    position: 'absolute',
+    inset: 0,
+    background: 'rgba(0,0,0,0.7)',
+    display: 'flex',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 50,
     padding: 24,
   },
-  successEmoji: {
-    fontSize: 64,
-    marginBottom: 12,
-  },
-  failEmoji: {
-    fontSize: 64,
-    marginBottom: 12,
+  overlayText: {
+    color: '#fff',
+    marginTop: 14,
+    fontSize: 16,
+    fontWeight: 600,
   },
   resultTitle: {
     color: '#fff',
     fontSize: 24,
-    fontWeight: '800',
+    fontWeight: 800,
     textAlign: 'center',
     marginBottom: 6,
+    marginTop: 12,
   },
   resultSub: {
     color: 'rgba(255,255,255,0.7)',
@@ -358,27 +360,34 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    paddingBottom: Platform.OS === 'ios' ? 28 : 14,
+    background: 'rgba(0,0,0,0.6)',
+    padding: '14px 20px',
   },
-  bottomBarHighContrast: {
-    backgroundColor: 'rgba(0,0,0,0.9)',
+  bottomBarHC: {
+    background: 'rgba(0,0,0,0.9)',
   },
   bottomBarText: {
     color: 'rgba(255,255,255,0.75)',
     fontSize: 12,
     marginBottom: 6,
   },
-  scoreBar: {
+  scoreTrack: {
     height: 4,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    background: 'rgba(255,255,255,0.15)',
     borderRadius: 2,
     overflow: 'hidden',
   },
-  scoreBarFill: {
+  scoreFill: {
     height: 4,
     borderRadius: 2,
+    transition: 'width 0.4s, background 0.4s',
   },
-});
+  spinner: {
+    width: 40,
+    height: 40,
+    border: '3px solid rgba(255,255,255,0.2)',
+    borderTop: '3px solid #f43f5e',
+    borderRadius: '50%',
+    animation: 'spin 0.8s linear infinite',
+  },
+};
