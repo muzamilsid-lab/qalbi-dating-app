@@ -3,6 +3,8 @@ import { cookies }                  from 'next/headers';
 import { createServerClient }       from '@supabase/ssr';
 import type { EmergencyContact }    from '@/lib/safety/types';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

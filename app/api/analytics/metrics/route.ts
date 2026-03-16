@@ -9,6 +9,8 @@ import {
 } from '@/lib/analytics/server/MetricsService';
 import { getCohortData }            from '@/lib/analytics/server/MetricsService';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

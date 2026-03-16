@@ -7,6 +7,8 @@ import {
 } from '@/lib/analytics/server/BigQueryETL';
 import { computeChurnScores }       from '@/lib/analytics/server/ChurnPredictor';
 
+export const dynamic = 'force-dynamic';
+
 function getAdmin() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

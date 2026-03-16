@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 const BLOCKED_PATTERNS = [
   /bit\.ly\/[a-z0-9]+$/i,
   /tinyurl\.com/i,

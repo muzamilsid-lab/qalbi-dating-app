@@ -4,6 +4,8 @@ import { createServerClient }       from '@supabase/ssr';
 import { createClient }             from '@supabase/supabase-js';
 import { getFunnelData }            from '@/lib/analytics/server/MetricsService';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

@@ -4,6 +4,8 @@ import { createServerClient }       from '@supabase/ssr';
 import { processReport }            from '@/lib/moderation/EscalationEngine';
 import type { ReportReason }        from '@/lib/moderation/types';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

@@ -8,6 +8,8 @@ import {
 } from '@/lib/stripe/StripeService';
 import { PLANS } from '@/lib/stripe/types';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

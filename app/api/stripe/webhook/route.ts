@@ -5,6 +5,8 @@ import { constructWebhookEvent } from '@/lib/stripe/StripeService';
 import { invalidateFeaturesCache } from '@/lib/stripe/getPremiumFeatures';
 import type { SubscriptionPlan, SubscriptionStatus } from '@/lib/stripe/types';
 
+export const dynamic = 'force-dynamic';
+
 // ─── Supabase service-role client ─────────────────────────────────────────────
 
 function getAdmin() {

@@ -6,6 +6,8 @@ import { mixpanelTrack }            from '@/lib/analytics/providers/MixpanelProv
 import { amplitudeTrack }           from '@/lib/analytics/providers/AmplitudeProvider';
 import type { TrackedEvent }        from '@/lib/analytics/types';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

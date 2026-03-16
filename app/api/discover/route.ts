@@ -4,6 +4,8 @@ import { cookies }                  from 'next/headers';
 import { createServerClient }       from '@supabase/ssr';
 import { RecommendationEngine }     from '@/lib/recommendations/RecommendationEngine';
 
+export const dynamic = 'force-dynamic';
+
 // ─── Singleton engine per process ────────────────────────────────────────────
 //     Next.js hot-reloads the module in dev, so we guard with a global.
 

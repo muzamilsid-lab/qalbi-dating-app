@@ -5,6 +5,8 @@ import { createClient }             from '@supabase/supabase-js';
 import { applyAction }              from '@/lib/moderation/EscalationEngine';
 import type { ActionTaken }         from '@/lib/moderation/types';
 
+export const dynamic = 'force-dynamic';
+
 function makeUserSupabase() {
   const jar = cookies();
   return createServerClient(

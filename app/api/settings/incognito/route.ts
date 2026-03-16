@@ -4,6 +4,8 @@ import { createServerClient }       from '@supabase/ssr';
 import { getPremiumFeatures }       from '@/lib/stripe/getPremiumFeatures';
 import { invalidateFeaturesCache }  from '@/lib/stripe/getPremiumFeatures';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

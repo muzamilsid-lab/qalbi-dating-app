@@ -3,6 +3,8 @@ import { cookies }                  from 'next/headers';
 import { createServerClient }       from '@supabase/ssr';
 import { deleteRoom }               from '@/lib/video/DailyService';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

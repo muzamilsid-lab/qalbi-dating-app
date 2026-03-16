@@ -4,6 +4,8 @@ import { createServerClient }       from '@supabase/ssr';
 import { createRoom, createToken }  from '@/lib/video/DailyService';
 import { BASE_DURATION_MINUTES }    from '@/lib/video/types';
 
+export const dynamic = 'force-dynamic';
+
 function makeSupabase() {
   const jar = cookies();
   return createServerClient(

@@ -3,6 +3,8 @@ import { cookies }                  from 'next/headers';
 import { createServerClient }       from '@supabase/ssr';
 import { EngagementAction }         from '@/components/Prompts/types';
 
+export const dynamic = 'force-dynamic';
+
 const VALID_ACTIONS: EngagementAction[] = ['view', 'like', 'reply', 'swipe_right_after'];
 
 // ─── POST /api/prompts/engagement ────────────────────────────────────────────
