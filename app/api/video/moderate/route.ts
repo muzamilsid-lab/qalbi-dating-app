@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient }             from '@supabase/supabase-js';
 
-// Service-role client — bypasses RLS for ai_moderation_flags
-const supabaseService = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+// Service-role client — lazy so env vars are read at request time, not build time
+function getServiceClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  );
+}
 
 const CONFIDENCE_THRESHOLD = 0.75; // flag if confidence > 75%
 
@@ -39,13 +41,13 @@ export async function POST(request: NextRequest) {
     const base64 = frameDataUrl.split(',')[1];
     const buffer = Buffer.from(base64, 'base64');
     const path   = `ai-flags/${callId}/${participantUserId}-${Date.now()}.jpg`;
-    await supabaseService.storage
+    await getServiceClient().storage
       .from('moderation-frames')
       .upload(path, buffer, { contentType: 'image/jpeg' });
     frameUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/moderation-frames/${path}`;
   } catch { /* best-effort */ }
 
-  await supabaseService.from('ai_moderation_flags').insert({
+  await getServiceClient().from('ai_moderation_flags').insert({
     call_id:          callId,
     flagged_user_id:  participantUserId,
     flag_type:        result.flagType ?? 'other',
